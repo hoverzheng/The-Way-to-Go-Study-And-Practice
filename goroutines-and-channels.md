@@ -844,7 +844,7 @@ func testWriterAndReader(max int) {
 	go reader("read1")
 	go reader("read2")
 	go reader("read3")
-********
+	
 	// 获取三个reader的任务完成状态
 	name1 := <-msgChan
 	name2 := <-msgChan
