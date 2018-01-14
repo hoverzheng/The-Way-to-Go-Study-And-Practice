@@ -1,5 +1,3 @@
-[TOC]
-
 # Go高级编程--Goroutines and Channels
 
 通过goroutines和channels可以实现应用程序之间的通讯和并发编程\(concurrent programming\)。
