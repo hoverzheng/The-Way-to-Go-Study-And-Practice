@@ -860,4 +860,468 @@ func main() {
 ```
 
 
+### channel工厂
 
+在这种编程方式中常见的另一种模式如下：不是将一个通道作为参数传递给goroutine，而是让该函数创建通道并将其返回（所以它起到了工厂的作用）。 函数内部的lambda函数被称为goroutine。
+
+```
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	stream := pump()
+	go suck(stream)
+	// the above 2 line can be shortened to: go suck( pump() ) //更加简洁
+	time.Sleep(1e9)
+}
+
+// 注意：该函数返回的是一个channel
+func pump() chan int {
+	ch := make(chan int)
+	go func() {
+		for i := 0; ; i++ {
+			ch <- i
+		}
+	}()
+	return ch
+}
+
+
+func suck(ch chan int) {
+	for {
+		fmt.Println(<-ch)
+	}
+}
+```
+
+
+
+### 在channel中使用range
+
+可以在channel中使用range来读取channel中的元素，直到channel关闭。
+
+通过range访问channel的元素的写法如下：
+
+```
+for v := range ch {
+	fmt.Printf(“The value is %v\n”,v)
+}
+```
+
+下面的代码从给定的通道ch读取，直到通道关闭，然后继续执行下面的代码。很明显，另一个goroutine必须写入ch（否则为for循环中的执行块），并且在完成写入时必须关闭ch。 函数suck可以应用这个，也可以在goroutine中启动这个动作。代码如下：
+
+以下代码会会不断向channel中放入整数，而另一个goroutine会不断的取走channel中的元素。
+
+```
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	suck(pump())
+	time.Sleep(1e9)
+}
+
+func pump() chan int {
+	ch := make(chan int)
+	go func() {
+		for i := 0; ; i++ {
+			ch <- i
+		}
+	}()
+	return ch
+}
+
+func suck(ch chan int) {
+	go func() {
+		for v := range ch {
+			fmt.Println(v)
+		}
+	}()
+}
+```
+
+分析：通过range来读取channel中的元素，会比较简洁和方便。
+
+另外，还可以实现channel的迭代模式：
+
+```
+func (c *container) Iter() <-chan items {
+	ch := make(chan item)
+	go func() {
+		for i := 0; i < c.Len(); i++ { // or use a for-range loop
+			ch <- c.items[i]
+		}
+	}()
+	return ch
+}
+```
+
+可以通过以下方式来进行迭代：
+
+```
+for x := range container.Iter() { … }
+```
+
+
+### channel的方向性
+
+所有的channel本身都是双向的，我们可以按默认的方式定义只读和只写的变量，定义的形式如下：
+
+```
+var send_only chan<- int  // 仅用于接收数据的channel
+var recv_only <-chan int  // 仅用户发送数据的channel
+```
+
+仅用于接收的channel端不能关闭channel，因为这样是没有意义的。关闭channel的意义在于：发送端通知接收端不再有数据发送过来了。
+
+下面的代码说明了channel是双向的事实：
+
+```
+var c = make(chan int) // 创建一个channel，它是双向的
+go source(c)
+go sink(c)
+
+func source(ch chan<- int) {
+	for { ch <- 1 }
+}
+
+func sink(ch <-chan int) {
+	for { <-ch }
+}
+```
+
+#### 通过channel实现流水线作业
+
+通过使用定向符号，我们确保goroutine不会执行不允许的channel操作。
+这样我们可以让每个goroutine把每次的输入经过处理后，写入到输出中。并把每个输出连接起来实现流水线作业。
+
+```
+sendChan := make(chan int)
+reciveChan := make(chan string)
+go processChannel(sendChan, receiveChan)
+
+func processChannel(in <-chan int, out chan<- string) {
+	for inValue := range in {
+		result:= ... // 处理inValue
+		out <- result  // 把处理完成后的结果，发送到下一个channel
+	}
+}
+```
+
+
+#### 实战
+
+下面的程序是一个打印素数的算法，也是一个典型的流水线作业程序。
+
+```
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+// Send the sequence 2, 3, 4, ... to channel ch.
+// 这个函数负责不断的产生原始的数据到最开始的channel中
+func generate(ch chan int) {
+	for i := 2; ; i++ {
+		fmt.Printf("generate: %d to %f\n", i, ch)
+		time.Sleep(1e9)
+		ch <- i // Send i to channel ch.
+	}
+}
+
+// 该函数负责：从输入channel：in中不断的取出数据，并处理其中的数据（过滤），并把过滤完成的数据发送到out的channel中
+func filter(in, out chan int, prime int) {
+	for {
+		fmt.Printf("in: %f, out: %f\n", in, out)
+		i := <-in // Receive value of new variable i from in.
+		if i%prime != 0 {
+			out <- i // Send i to channel out.
+		}
+	}
+}
+
+
+// 在main中实现了主要的流水线对接过程
+// The prime sieve: Daisy-chain filter processes together.
+func main() {
+	ch := make(chan int) // Create a new channel
+	go generate(ch)      // 向channel中产生并发送数据
+
+	for {
+		prime := <-ch  //从上一个channel中读取数据
+		fmt.Print(prime, "\n")
+		ch1 := make(chan int) // 创建一个新的channel
+		go filter(ch, ch1, prime)  // 启动一个goroutine把原来的channel对接到新的channel中
+		ch = ch1                   // 把新的channel作为下一个goroutine的输入
+	}
+}
+
+```
+注意：以上程序会不断的产生goroutine，直到管道中没有数据输入。数据流的过程如下：
+
+```
+[2,3,4,5,6,7...]-->[3,5,7,9,11]-->[5,7,11]-->[7,11]-->[11]
+                       2             3          5      7
+```
+每次每个goroutine会使用一个数来进行过滤。
+
+另外以上代码也可以这样写：
+
+```
+package main
+
+import (
+	"fmt"
+)
+
+// Send the sequence 2, 3, 4, ... to returned channel
+func generate() chan int {
+	ch := make(chan int)
+	go func() {
+		for i := 2; ; i++ {
+			ch <- i
+		}
+	}()
+	return ch
+}
+
+// Filter out input values divisible by prime, send rest to returned channel
+func filter(in chan int, prime int) chan int {
+	out := make(chan int)
+	go func() {
+		for {
+			if i := <-in; i%prime != 0 {
+				out <- i
+			}
+		}
+	}()
+	return out
+}
+
+func sieve() chan int {
+	out := make(chan int)
+	go func() {
+		ch := generate()
+		for {
+			prime := <-ch
+			ch = filter(ch, prime)
+			out <- prime
+		}
+	}()
+	return out
+}
+
+func main() {
+	primes := sieve()
+	for {
+		fmt.Println(<-primes)
+	}
+}
+
+```
+
+### goroutines同步：关闭channel并测试阻塞通道
+
+channel可以显示的关闭，但只能是发送端关闭channel才有意义，因为发送端关闭channel说明没有数据再发送了。请不要在接收端关闭一个channel。
+我们可以调用close函数来关闭一个channel，但若这样做发送端会报错：panic。那么当channel没有数据发送，又想通知接收端，我们应该怎么做呢？
+可以有几种办法：
+
+* 使用defer
+
+```
+ch := make(chan float64)
+defer close(ch)
+```
+
+* 测试channel的状态
+
+注意：通过:=可以来测试channel的状态。
+
+```
+v, ok := <-ch // ok is true if v received value
+```
+
+经常这样用：
+
+```
+if v, ok := <-ch; ok {
+	process(v)
+}
+```
+
+或者这样：
+
+```
+v, ok := <-ch
+
+if !ok {
+	break
+}
+process(v)
+```
+
+
+
+* channel同步实战
+
+```
+// doChannel
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+// 向ch中发送数据
+func sendData(ch chan string) {
+	ch <- "Hello"
+	ch <- "hover1"
+	ch <- "hover2"
+	ch <- "Good Bye!!"
+	close(ch) // 没有数据了，通知接收端
+}
+
+//从channel中接收数据并打印
+func getData(ch chan string) {
+	for {
+		input, open := <-ch //获取channel中的数据和channel的状态
+
+		if !open { //测试channel状态
+			break
+		}
+		fmt.Printf("%s ", input)
+	}
+	fmt.Println("All is done!!\n")
+}
+
+func main() {
+	ch1 := make(chan string)
+	go sendData(ch1)
+	go getData(ch1)
+
+	time.Sleep(1e9)
+}
+
+```
+
+
+* 通过range来获取channel状态
+
+```
+for input := range ch {
+	process(input)
+}
+```
+
+这样就可以把以上程序的getData换成如下的代码：
+
+```
+func getData2(ch chan string) {
+	for input := range ch {
+		fmt.Printf("%s ", input)
+	}
+}
+```
+
+### 阻塞和producer-consumer模式
+
+在channel迭代器模式中，两个goroutine之间的关系是这样的，通常是阻塞另一个。 如果程序在多核机器上运行，则大部分时间只能使用一个处理器。 这可以通过使用缓冲区大于0的通道来改善。 例如，对于大小为100的缓冲区，迭代器在阻塞之前可以从容器中产生至少100个项目。 如果消费者的goroutine运行在一个单独的处理器上，则goroutine可能永远不会被阻塞。
+
+
+由于容器中的物品数量一般是已知的，因此使用具有足够容量的通道来容纳所有物品是有意义的。 这样，迭代器将永远不会阻塞（虽然消费者goroutine仍然可能）。 但是，这会使得在任何给定的容器上迭代所需的内存数量增加一倍，所以信道容量应该限制在某个最大值。 对代码进行定时或基准测试可帮助您找到最小内存使用量和最佳性能的缓冲区容量。
+
+
+
+## 通过select在不同channel之间切换
+
+从不同的并发执行的goroutines中取出值可以用select关键字来完成，它与开关控制语句非常相似，有时也被称为通信开关。 它就像一个你准备好的投票机制; 选择监听通道上的传入数据，但也可能出现在通道上发送值的情况。
+
+样例代码如下:
+
+```
+select {
+	case u:= <- ch1:
+		…
+	case v:= <- ch2:
+		…
+		…
+	default: // no value ready to be received
+		…
+}
+```
+
+default子句是可选的; 通过行为，如在正常的开关，是不允许的。 在其中一种情况下执行中断或返回时，将终止选择。
+
+选择做什么时：它选择其中的情况列出的多个通信中的哪一个可以继续。
+
+* 如果全部被阻塞，则等待直到可以继续
+* 如果多个可以继续，**它随机选择一个**
+* 如果没有任何通道操作可以继续，并且存在default子句，则执行该子句：default子句设置为始终可运行（即：准备执行）
+
+
+在select语句中通过使用default case的子句来保证它是非阻塞的，默认块会永远被永远执行。
+select语句实现了一种侦听器模式，所以它主要用在（n无限）循环中; 当达到某个条件时，循环通过break语句退出。
+
+在程序以下程序中有2个通道ch1和ch2以及3个goroutines pump1()，pump2()和suck()。 这是典型的生产者 - 消费者模式。
+
+
+* select的使用例子
+
+下面的代码在无限循环中，ch1和ch2通过pump1()和pump2()填充整数; suck()在非结束循环中轮询输入，从select子句中的ch1和ch2中取整数并输出。 选择的情况取决于接收哪个频道信息。 程序在1秒后终止。
+
+
+```
+package main
+
+import (
+	"fmt"
+	"runtime"
+	"time"
+)
+
+func main() {
+	runtime.GOMAXPROCS(2)
+
+	ch1 := make(chan int)
+	ch2 := make(chan int)
+
+	go pump1(ch1)
+	go pump2(ch2)
+	go suck(ch1, ch2)
+
+	time.Sleep(1e9)
+}
+
+func pump1(ch chan int) {
+	for i := 0; ; i++ {
+		ch <- i * 2
+	}
+}
+func pump2(ch chan int) {
+	for i := 0; ; i++ {
+		ch <- i + 5
+	}
+}
+
+func suck(ch1 chan int, ch2 chan int) {
+	for {
+		select {
+		case v := <-ch1:
+			fmt.Printf("Received on channel 1: %d\n", v)
+		case v := <-ch2:
+			fmt.Printf("Received on channel 2: %d\n", v)
+		}
+	}
+}
+```
